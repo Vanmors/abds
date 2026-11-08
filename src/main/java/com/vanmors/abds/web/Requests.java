@@ -66,7 +66,9 @@ public final class Requests {
         if (value == null || !value.isTextual()) {
             throw BadRequestException.invalidField(field);
         }
-        return parseDate(value.asText()).orElseThrow(() -> BadRequestException.invalidField(field));
+        return parseDate(value.asText())
+                .filter(Requests::fitsClickHouseDate)
+                .orElseThrow(() -> BadRequestException.invalidField(field));
     }
 
     public static LocalDate requiredDateParam(Context ctx, String parameter) {
@@ -100,10 +102,11 @@ public final class Requests {
         } catch (DateTimeParseException e) {
             return Optional.empty();
         }
-        if (date.isBefore(CLICKHOUSE_DATE_MIN) || date.isAfter(CLICKHOUSE_DATE_MAX)) {
-            return Optional.empty();
-        }
         return Optional.of(date);
+    }
+
+    private static boolean fitsClickHouseDate(LocalDate date) {
+        return !date.isBefore(CLICKHOUSE_DATE_MIN) && !date.isAfter(CLICKHOUSE_DATE_MAX);
     }
 
     public static String optionalText(JsonNode body, String field) {

@@ -11,6 +11,9 @@ import java.util.Optional;
 
 public class TariffRepository {
 
+    private static final LocalDate DATE_TIME_MIN = LocalDate.of(1970, 1, 1);
+    private static final LocalDate DATE_TIME_MAX = LocalDate.of(2106, 2, 7);
+
     private static final String EXISTS_BY_ID = """
             SELECT 1
             FROM dim_tariffs
@@ -38,6 +41,9 @@ public class TariffRepository {
     }
 
     public Optional<Tariff> findValidAt(final LocalDate date) {
+        if (date.isBefore(DATE_TIME_MIN) || date.isAfter(DATE_TIME_MAX)) {
+            return Optional.empty();
+        }
         final List<GenericRecord> rows = client.queryAll(FIND_VALID_AT, Map.of("date", date.toString()));
         return rows.stream().findFirst().map(row -> new Tariff(
                 row.getLong("id"),

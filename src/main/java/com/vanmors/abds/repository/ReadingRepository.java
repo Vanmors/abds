@@ -9,6 +9,9 @@ import java.util.List;
 import java.util.Map;
 
 public class ReadingRepository {
+
+    private static final LocalDate DATE_MIN = LocalDate.of(1970, 1, 1);
+    private static final LocalDate DATE_MAX = LocalDate.of(2149, 6, 6);
     private final Client client;
     private static final String INSERT = """
             INSERT INTO fact_meter_readings (realty_id, user_id, tariff_id, gauge_id, reading_date, day_kw, night_kw, created_at)
@@ -43,10 +46,13 @@ public class ReadingRepository {
     }
 
     public List<Reading> findByPeriod(final long realtyId, final LocalDate dateFrom, final LocalDate dateTo) {
+        if (dateTo.isBefore(DATE_MIN) || dateFrom.isAfter(DATE_MAX)) {
+            return List.of();
+        }
         return client.queryAll(FIND_BY_PERIOD, Map.of(
                         "realty_id", realtyId,
-                        "date_from", dateFrom.toString(),
-                        "date_to", dateTo.toString()))
+                        "date_from", max(dateFrom, DATE_MIN).toString(),
+                        "date_to", min(dateTo, DATE_MAX).toString()))
                 .stream()
                 .map(row -> new Reading(
                         row.getString("reading_date_text"),
@@ -56,5 +62,13 @@ public class ReadingRepository {
                         row.getLong("day_kw"),
                         row.getLong("night_kw")))
                 .toList();
+    }
+
+    private static LocalDate max(final LocalDate a, final LocalDate b) {
+        return a.isAfter(b) ? a : b;
+    }
+
+    private static LocalDate min(final LocalDate a, final LocalDate b) {
+        return a.isBefore(b) ? a : b;
     }
 }
