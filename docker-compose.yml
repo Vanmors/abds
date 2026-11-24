@@ -1,0 +1,42 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.7
+    # Server listens on the ports from .env.local, so host and container ports are the same.
+    command:
+      - "--"
+      - "--http_port=${CLICKHOUSE_HTTP_PORT:?CLICKHOUSE_HTTP_PORT is not set}"
+      - "--tcp_port=${CLICKHOUSE_PORT:?CLICKHOUSE_PORT is not set}"
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT}:${CLICKHOUSE_HTTP_PORT}"
+      - "${CLICKHOUSE_PORT}:${CLICKHOUSE_PORT}"
+    volumes:
+      - ./volume:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER is not set}
+      # Empty password is allowed (see .env.local), only a missing variable fails.
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD?CLICKHOUSE_PASSWORD is not set}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:?CLICKHOUSE_DATABASE is not set}
+      # Without it an empty-password "default" user is restricted to localhost
+      # inside the container, so the host could not connect via published ports.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--port", "${CLICKHOUSE_PORT}", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  app:
+    build: .
+    env_file: .env.local
+    environment:
+      # Inside the compose network ClickHouse is reached by service name, ports come from .env.local.
+      CLICKHOUSE_HOST: clickhouse
+    ports:
+      - "${APP_PORT:?APP_PORT is not set}:${APP_PORT}"
+    depends_on:
+      clickhouse:
+        condition: service_healthy

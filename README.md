@@ -1,48 +1,113 @@
-# Лабораторный проект
+# Энергосбыт
 
-[![labs](https://github.com/{your_username}/{your_repo}/actions/workflows/energosbyt.energosbyt.lab.yml/badge.svg)](https://github.com/{your_username}/{your_repo}/actions/workflows/energosbyt.energosbyt.lab.yml)
+[![labs](https://github.com/Vanmors/abds/actions/workflows/energosbyt.lab.yml/badge.svg)](https://github.com/Vanmors/abds/actions/workflows/energosbyt.lab.yml)
 
-Backend-сервис вымышленной ЖКХ-компании для практики по курсу «Архитектура систем обработки больших данных».
+Лабораторная работа №1 курса «Архитектура систем обработки больших данных»: SCD 1/2/3 в ClickHouse.
+HTTP-сервис на Java 21 (Javalin, virtual threads, ClickHouse client-v2) поверх схемы «звезда»
+энергосбытовой компании.
 
-## С чего начать
+## Запуск
 
-1. **‼️ Настройте репозиторий** — проведите обязательную настройку контрибьюторов и защиты ветки (см. ниже)
-2. **[Лабораторные работы](https://github.com/sitnikovik/abds/tree/master/lab)** — технические задания для каждой лабораторной работы
-3. **[CONTRIBUTING.md](CONTRIBUTING.md)** — требования к структуре проекта, процесс разработки и проверки
-4. **[Документация курса](https://github.com/sitnikovik/abds)** — методические материалы и дополнительные ресурсы
+```bash
+make run        # ClickHouse и приложение в docker compose
+make setup      # схема, датасеты, загрузка (нужен make run)
+curl -i localhost:8080/ping
+make teardown   # удалить таблицы
+make stop
+```
 
-> [!IMPORTANT]
-> Поменяйте `{your_username}` и `{your_repo}` в badge на ваши имя пользователя и название репозитория.
+| Цель | Что делает |
+| --- | --- |
+| `make gen` | `generator/generate.py` пишет CSV в `data/` (только стандартная библиотека, фиксированный seed, ~4 с) |
+| `make load` | `TRUNCATE` и `INSERT ... FORMAT CSVWithNames` для каждой таблицы |
+| `make schema` | `sql/table_init.sql` |
+| `make teardown` | `sql/table_drop.sql` |
 
-## Настройка репозитория
+Все настройки берутся из `.env.local`, включая порты: ClickHouse и внутри контейнера слушает
+`CLICKHOUSE_HTTP_PORT` и `CLICKHOUSE_PORT`, поэтому порты на хосте и в контейнере совпадают.
+`.env` это симлинк на `.env.local`, а не отдельный файл настроек: docker compose читает `.env` автоматически,
+поэтому шаги CI, которые вызывают `docker compose logs` и `docker compose down -v` без `--env-file`, тоже
+получают переменные.
 
-### Защита основной ветки
+**Повторная загрузка.** `make load` очищает каждую таблицу перед вставкой, поэтому повторный запуск даёт те же
+данные без дублей в любом движке. Генератор детерминированный: `make gen` всегда создаёт одинаковые файлы.
 
-После создания репозитория из шаблона **обязательно настройте правила защиты для ветки `main`**:
+## Схема
 
-1. Откройте **Settings** → **Branches** → **Add classic branch protection rule**
-2. В поле **Branch name pattern** укажите: `main`
-3. Включите следующие опции:
-   - **Require a pull request before merging**
-     - Require approvals: **1**: требует минимум одного одобрения перед слиянием
-   - ***Require status checks to pass before merging***
-     - Выберите *"autograder"*: проверит все лабораторные работы автоматически
-     - ***Require branches to be up to date before merging*** (рекомендуется):
-     требует, чтобы ветка PR была синхронизирована с последними изменениями из основной ветки перед слиянием
-   - ***Do not allow bypassing the above settings***: запрещает обход настроек защиты ветки
-4. Нажмите **Create** или **Save changes**
+| Таблица | Движок | Ключ сортировки | Партиция | Почему |
+| --- | --- | --- | --- | --- |
+| `dim_realty` | `MergeTree` | `id` | нет | поиск по id, 1 000 строк |
+| `dim_gauges` | `MergeTree` | `id` | нет | поиск по id |
+| `dim_users` | `ReplacingMergeTree(updated_at)` | `id` | нет | одна актуальная строка на собственника (SCD 1 и SCD 3) |
+| `dim_tariffs` | `ReplacingMergeTree(updated_at)` | `(id, valid_from)` | нет | каждая версия имеет свой ключ (SCD 2); закрытие версии перезаписывает тот же ключ с более новым `updated_at` |
+| `fact_gauge_bindings` | `VersionedCollapsingMergeTree(sign, version)` | `(realty_id, gauge_id)` | нет | поиск по объекту; строка аннулирования повторяет ключ и версию установки |
+| `fact_meter_readings` | `ReplacingMergeTree(created_at)` | `(realty_id, reading_date)` | `toYear(reading_date)` | одно значение на объект и дату, побеждает более поздний `created_at` |
+| `fact_invoice` | `MergeTree` | `(realty_id, created_at)` | нет | страница счетов объекта, отсортированная по дате |
 
-> ⚠️ **Важно:** Без этих настроек автоматические проверки не будут блокировать PR с ошибками.
+- Каждый запрос API фильтрует по префиксу ключа сортировки, поэтому читаются только гранулы одного объекта.
+- `ReplacingMergeTree` схлопывает дубли только внутри партиции. Партиция показаний считается от `reading_date`,
+  а он входит в ключ, поэтому корректировка всегда попадает в ту же партицию, что и исходная строка.
+  Партиции по годам держат число parts небольшим (4 партиции на 3 года).
+- Справочники маленькие, партиционирование только добавило бы parts.
 
-### Добавление коллабораторов
+### FINAL
 
-Чтобы преподаватели могли проводить код-ревью:
+`ReplacingMergeTree` и `VersionedCollapsingMergeTree` схлопывают строки при фоновых слияниях, в неизвестный
+момент. Запросы, которым нужна актуальная версия, используют `FINAL`:
 
-1. Откройте **Settings** → **Collaborators**
-2. Нажмите **Add people**
-3. Добавьте всех кто есть в списке ревьюеров в файле [CODEOWNERS](CODEOWNERS)
-4. Выберите роль: **Write** (или выше), иначе ревьюер не сможет одобрить PR
+- `dim_users`, `fact_meter_readings`, поиск версии `dim_tariffs` по дате: `FINAL` (важно, какая версия вернётся);
+- проверки существования (`SELECT 1 ... LIMIT 1`): без `FINAL`, любая версия доказывает, что строка есть;
+- `fact_gauge_bindings`: `GROUP BY gauge_id, version HAVING sum(sign) > 0`, результат верен до и после слияний;
+- таблицы на `MergeTree`: `FINAL` неприменим.
 
-## Помощь
+### Почему VersionedCollapsingMergeTree для привязок счётчиков
 
-Возникли вопросы? → [@sitnikovik](https://t.me/sitnikovik)
+`ReplacingMergeTree` с ключом `realty_id` был бы проще (одна вставка, без чтения перед записью), но без
+отдельного признака удаления он не умеет аннулировать установку без замены, а его состояние видно только
+через `FINAL` или `argMax`. С `sign` аннулирование это обычная вставка, а `sum(sign)` даёт состояние без
+схлопывания при чтении.
+
+## API
+
+| Метод | Путь | Примечания |
+| --- | --- | --- |
+| GET | `/ping` | 200, пустое тело |
+| GET | `/users/{id}` | |
+| PATCH | `/users/{id}` | `fio` и/или `phone`; 204 |
+| GET | `/realty/{id}` | |
+| POST | `/realty/{id}/readings` | все поля обязательны; объект, собственник, счётчик и тариф должны существовать; 201 |
+| GET | `/realty/{id}/readings?date_from=&date_to=` | оба обязательны, границы включительно; одно значение на дату |
+| GET | `/realty/{id}/invoices?limit=10&offset=0` | сначала новые; `count` это общее число счетов |
+| GET | `/tariffs?date=` | версия с `valid_from <= date < valid_to` |
+| POST | `/realty/{id}/gauges` | аннулирует активную установку и устанавливает счётчик; 201 |
+
+Ошибки в формате `{"message": "..."}`: 400 `invalid "<name>" field` / `invalid "<name>" parameter`, 404 `Not found`.
+Валидация выполняется до поиска сущностей, поэтому невалидный ввод даёт 400, даже если сущности нет.
+Два текста в задании не определены: `"fio" or "phone" field is required` (пустой PATCH) и
+`invalid request body` (тело не JSON-объект). Перевёрнутый период сообщается как ошибка `date_from`.
+
+Структура кода: `controller` (HTTP, валидация) → `service` (правила SCD) → `repository` (SQL), связывание вручную в `App`.
+
+## Данные
+
+| Таблица | Строк | Содержимое |
+| --- | --- | --- |
+| `dim_realty` | 1 000 | 5 домов, 950 квартир и 50 нежилых помещений |
+| `dim_users` | 1 000 | `user_id = realty_id`, у ~10% заполнен `phone_prev` |
+| `dim_tariffs` | 3 | тариф 1: с 2023-01-01, 2024-07-01, 2025-11-01 (открыта до 2099-01-01) |
+| `dim_gauges` | 1 050 | счётчик `id = realty_id`, 50 замен с id 1001..1050 |
+| `fact_gauge_bindings` | 1 100 в CSV, 1 000 в таблице | `+1 v1` на каждый объект, замены добавляют `-1 v1` и `+1 v2` |
+| `fact_meter_readings` | 1 128 993 в CSV, 1 096 000 в таблице | ежедневные нарастающие показания 2023-11-01..2026-10-31, ~3% с корректировкой |
+| `fact_invoice` | 36 000 | ежемесячные, выставлены в последний день месяца в 23:59:59 по версии тарифа на этот момент |
+
+Строк в таблице меньше, чем в CSV, из-за настройки `optimize_on_insert` (включена по умолчанию): строки
+внутри одного `INSERT` схлопываются уже при записи. Корректировки из CSV и пары `+1`/`-1` попадают в один блок
+вставки и до таблицы не доходят. Через API каждая строка пишется отдельным `INSERT`, поэтому в сценариях SCD
+видны обе строки до слияния.
+
+## Сценарии SCD и запросы для отладки
+
+- [docs/scd-scenarios.md](docs/scd-scenarios.md): SQL и запросы к API для каждого сценария SCD из задания
+  и что они показывают.
+- [api/energosbyt.http](api/energosbyt.http): запросы ко всем эндпоинтам, включая ошибки 400 и 404.
+  Запускается из IntelliJ IDEA (HTTP Client) или VS Code (расширение REST Client).
