@@ -1,0 +1,163 @@
+@host = http://localhost:8080
+
+### Ping
+GET {{host}}/ping
+
+### Owner
+GET {{host}}/users/1
+
+### Owner: not found
+GET {{host}}/users/999999999
+
+### Owner: change fio (SCD 1)
+PATCH {{host}}/users/1
+Content-Type: application/json
+
+{
+  "fio": "Петрова Анна Сергеевна"
+}
+
+### Owner: change phone (SCD 3), the previous phone moves to phone_prev
+PATCH {{host}}/users/1
+Content-Type: application/json
+
+{
+  "phone": "+79111111111"
+}
+
+### Owner: no fields, 400
+PATCH {{host}}/users/1
+Content-Type: application/json
+
+{}
+
+### Owner: invalid phone, 400
+PATCH {{host}}/users/1
+Content-Type: application/json
+
+{
+  "phone": "abc"
+}
+
+### Owner: not found
+PATCH {{host}}/users/999999999
+Content-Type: application/json
+
+{
+  "phone": "+79999999998"
+}
+
+### Realty
+GET {{host}}/realty/1
+
+### Realty: not found
+GET {{host}}/realty/999999999
+
+### Readings: submit
+POST {{host}}/realty/1/readings
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "gauge_id": 1,
+  "tariff_id": 1,
+  "reading_date": "2026-10-01",
+  "day_kw": 1250,
+  "night_kw": 300
+}
+
+### Readings: correction for the same date, the later one wins
+POST {{host}}/realty/1/readings
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "gauge_id": 1,
+  "tariff_id": 1,
+  "reading_date": "2026-10-01",
+  "day_kw": 1260,
+  "night_kw": 305
+}
+
+### Readings: negative day_kw, 400
+POST {{host}}/realty/1/readings
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "gauge_id": 1,
+  "tariff_id": 1,
+  "reading_date": "2026-10-01",
+  "day_kw": -5,
+  "night_kw": 300
+}
+
+### Readings: unknown owner, 404
+POST {{host}}/realty/1/readings
+Content-Type: application/json
+
+{
+  "user_id": 999999999,
+  "gauge_id": 1,
+  "tariff_id": 1,
+  "reading_date": "2026-10-01",
+  "day_kw": 1250,
+  "night_kw": 300
+}
+
+### Readings for a period, one value per date
+GET {{host}}/realty/1/readings?date_from=2026-10-01&date_to=2026-10-31
+
+### Readings: invalid date_from, 400
+GET {{host}}/realty/1/readings?date_from=not-a-date&date_to=2026-10-31
+
+### Readings: realty not found
+GET {{host}}/realty/999999999/readings?date_from=2026-10-01&date_to=2026-10-31
+
+### Invoices
+GET {{host}}/realty/1/invoices?limit=10&offset=0
+
+### Invoices: invalid limit, 400
+GET {{host}}/realty/1/invoices?limit=-1&offset=0
+
+### Invoices: realty not found
+GET {{host}}/realty/999999999/invoices
+
+### Tariff before November 1 (SCD 2)
+GET {{host}}/tariffs?date=2025-10-31
+
+### Tariff from November 1 (SCD 2)
+GET {{host}}/tariffs?date=2025-11-01
+
+### Tariff: no version on the date, 404
+GET {{host}}/tariffs?date=1900-01-01
+
+### Tariff: no date, 400
+GET {{host}}/tariffs
+
+### Tariff: invalid date, 400
+GET {{host}}/tariffs?date=not-a-date
+
+### Gauge replacement: cancels the active installation
+POST {{host}}/realty/1/gauges
+Content-Type: application/json
+
+{
+  "gauge_id": 1001
+}
+
+### Gauge replacement: invalid gauge_id, 400
+POST {{host}}/realty/1/gauges
+Content-Type: application/json
+
+{
+  "gauge_id": "abc"
+}
+
+### Gauge replacement: realty not found
+POST {{host}}/realty/999999999/gauges
+Content-Type: application/json
+
+{
+  "gauge_id": 2
+}
